@@ -1,0 +1,12 @@
+{
+  "name": "beesleague-pvp-relay",
+  "version": "1.0.0",
+  "description": "Servidor de retransmision PvP para Bee's League Multiverse",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "socket.io": "^4.7.5"
+  }
+}
