@@ -1,10 +1,11 @@
 // Servidor de retransmisión (relay) para Bee's League Multiverse.
 // No guarda nada en disco ni en una base de datos: todo vive en memoria
-// mientras el servidor esté corriendo. Hace 4 cosas:
-//  1) Une a 2 jugadores en una "sala" de PvP con un código y reenvía sus jugadas.
+// mientras el servidor esté corriendo. Hace 5 cosas:
+//  1) Une a 2 jugadores en una "sala" de PvP o Raid con un código y reenvía sus jugadas.
 //  2) Un chat global (una sola sala "lobby") para todos los conectados.
 //  3) Solicitudes de amistad entre jugadores conectados en ese momento.
 //  4) Perfil rápido y mensajes directos entre amigos, mientras ambos estén conectados.
+//  5) Intercambio de personajes 1 a 1 entre amigos conectados.
 
 const http = require('http');
 const { Server } = require('socket.io');
@@ -144,6 +145,54 @@ io.on('connection', (socket) => {
     const profile = (payload && payload.profile) || {};
     const target = onlinePlayers[toId];
     if (target) io.to(target.socketId).emit('profile_response_incoming', { profile });
+  });
+
+  // --- Intercambios ---
+  socket.on('trade_request', (payload, cb) => {
+    const toId = ((payload && payload.toId) || '').toString().slice(0, 40);
+    const fromName = ((payload && payload.fromName) || 'Jugador').toString().slice(0, 24);
+    const fromId = socket.data.playerId;
+    if (!fromId) { cb && cb({ ok: false, error: 'not_registered' }); return; }
+    const target = onlinePlayers[toId];
+    if (!target) { cb && cb({ ok: false, error: 'offline' }); return; }
+    io.to(target.socketId).emit('trade_request_incoming', { fromId, fromName });
+    cb && cb({ ok: true });
+  });
+
+  socket.on('trade_response', (payload) => {
+    const toId = ((payload && payload.toId) || '').toString().slice(0, 40);
+    const fromName = ((payload && payload.fromName) || 'Jugador').toString().slice(0, 24);
+    const accepted = !!(payload && payload.accepted);
+    const fromId = socket.data.playerId;
+    if (!fromId) return;
+    const target = onlinePlayers[toId];
+    if (target) io.to(target.socketId).emit('trade_response_incoming', { fromId, fromName, accepted });
+  });
+
+  socket.on('trade_offer', (payload) => {
+    const toId = ((payload && payload.toId) || '').toString().slice(0, 40);
+    const charId = ((payload && payload.charId) || '').toString().slice(0, 60);
+    const charName = ((payload && payload.charName) || '').toString().slice(0, 60);
+    const fromId = socket.data.playerId;
+    if (!fromId) return;
+    const target = onlinePlayers[toId];
+    if (target) io.to(target.socketId).emit('trade_offer_incoming', { fromId, charId, charName });
+  });
+
+  socket.on('trade_confirm', (payload) => {
+    const toId = ((payload && payload.toId) || '').toString().slice(0, 40);
+    const fromId = socket.data.playerId;
+    if (!fromId) return;
+    const target = onlinePlayers[toId];
+    if (target) io.to(target.socketId).emit('trade_confirm_incoming', { fromId });
+  });
+
+  socket.on('trade_cancel', (payload) => {
+    const toId = ((payload && payload.toId) || '').toString().slice(0, 40);
+    const fromId = socket.data.playerId;
+    if (!fromId) return;
+    const target = onlinePlayers[toId];
+    if (target) io.to(target.socketId).emit('trade_cancel_incoming', { fromId });
   });
 
   // --- Mensajes directos ---
