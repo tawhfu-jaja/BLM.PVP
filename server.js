@@ -1,7 +1,8 @@
 // Servidor de retransmisión (relay) para Bee's League Multiverse.
 // No guarda nada en disco ni en una base de datos: todo vive en memoria
 // mientras el servidor esté corriendo. Hace 5 cosas:
-//  1) Une a 2 jugadores en una "sala" de PvP o Raid con un código y reenvía sus jugadas.
+//  1) Une a 2 jugadores en una "sala" de PvP o Raid con un código y reenvía sus jugadas,
+//     o los empareja automáticamente sin código con "buscar partida".
 //  2) Un chat global (una sola sala "lobby") para todos los conectados.
 //  3) Solicitudes de amistad entre jugadores conectados en ese momento.
 //  4) Perfil rápido y mensajes directos entre amigos, mientras ambos estén conectados.
@@ -43,6 +44,9 @@ const MAX_HISTORY = 50;
 // onlinePlayers: { playerId: { socketId, name } }
 const onlinePlayers = {};
 
+// ---------- Cola de emparejamiento rápido (PvP sin código) ----------
+let matchmakingQueue = []; // [{ socketId, name }]
+
 io.on('connection', (socket) => {
   socket.data.room = null;
   socket.data.chatName = null;
@@ -77,6 +81,39 @@ io.on('connection', (socket) => {
     socket.data.room = code;
     cb && cb({ ok: true, hostName: room.hostName });
     io.to(room.hostId).emit('peer_joined', { name: room.guestName });
+  });
+
+  // --- Emparejamiento rápido: "buscar partida" sin código ---
+  socket.on('find_match', (payload) => {
+    // por si ya estaba en cola (doble clic, reconexión, etc.)
+    matchmakingQueue = matchmakingQueue.filter(p => p.socketId !== socket.id);
+    const name = ((payload && payload.name) || 'Jugador').toString().slice(0, 24);
+
+    if (matchmakingQueue.length > 0) {
+      const opponent = matchmakingQueue.shift();
+      const opponentSocket = io.sockets.sockets.get(opponent.socketId);
+      if (!opponentSocket) {
+        // el rival en cola ya no está conectado: esta persona pasa a esperar
+        matchmakingQueue.push({ socketId: socket.id, name });
+        socket.emit('match_searching');
+        return;
+      }
+      const code = generateCode();
+      rooms[code] = { hostId: opponent.socketId, hostName: opponent.name, guestId: socket.id, guestName: name };
+      socket.join(code);
+      socket.data.room = code;
+      opponentSocket.join(code);
+      opponentSocket.data.room = code;
+      io.to(opponent.socketId).emit('match_found', { room: code, isHost: true, opponentName: name });
+      socket.emit('match_found', { room: code, isHost: false, opponentName: opponent.name });
+    } else {
+      matchmakingQueue.push({ socketId: socket.id, name });
+      socket.emit('match_searching');
+    }
+  });
+
+  socket.on('cancel_match', () => {
+    matchmakingQueue = matchmakingQueue.filter(p => p.socketId !== socket.id);
   });
 
   socket.on('game_msg', (payload) => {
@@ -207,6 +244,8 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
+    // salir de la cola de emparejamiento si estaba buscando partida
+    matchmakingQueue = matchmakingQueue.filter(p => p.socketId !== socket.id);
     // salida de sala PvP
     const code = socket.data.room;
     if (code) {
