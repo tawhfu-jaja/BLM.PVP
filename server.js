@@ -41,6 +41,36 @@ const CHAT_ROOM = 'lobby';
 const chatHistory = []; // solo en memoria mientras el server esté vivo
 const MAX_HISTORY = 50;
 
+function broadcastSystem(text) {
+  const msg = { system: true, text };
+  chatHistory.push(msg);
+  if (chatHistory.length > MAX_HISTORY) chatHistory.shift();
+  io.to(CHAT_ROOM).emit('chat_message', msg);
+}
+
+// ---------- Hora Feliz PvP: 18:00 a 19:00, hora Argentina (UTC-3 todo el año) ----------
+let lastHappyHourAnnounce = null; // evita anunciar más de una vez el mismo evento
+setInterval(() => {
+  const arg = new Date(Date.now() - 3 * 3600000); // Argentina no usa horario de verano desde 2009
+  const h = arg.getUTCHours();
+  const m = arg.getUTCMinutes();
+  const dateKey = arg.toISOString().slice(0, 10);
+  if (h === 18 && m === 0) {
+    const key = dateKey + ':start';
+    if (lastHappyHourAnnounce !== key) {
+      lastHappyHourAnnounce = key;
+      broadcastSystem('🔥 ¡Empezó la Hora Feliz PvP! De 18:00 a 19:00 (Argentina) todas las recompensas de PvP están x4. ¡A buscar partida!');
+    }
+  }
+  if (h === 19 && m === 0) {
+    const key = dateKey + ':end';
+    if (lastHappyHourAnnounce !== key) {
+      lastHappyHourAnnounce = key;
+      broadcastSystem('⏰ La Hora Feliz PvP terminó por hoy. ¡Gracias por jugar! Vuelve mañana a las 18:00 (Argentina).');
+    }
+  }
+}, 30000);
+
 // ---------- Jugadores conectados ahora mismo (para amigos/DMs) ----------
 // onlinePlayers: { playerId: { socketId, name } }
 const onlinePlayers = {};
