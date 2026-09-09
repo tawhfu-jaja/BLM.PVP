@@ -2,7 +2,8 @@
 // No guarda nada en disco ni en una base de datos: todo vive en memoria
 // mientras el servidor esté corriendo. Hace 5 cosas:
 //  1) Une a 2 jugadores en una "sala" de PvP o Raid con un código y reenvía sus jugadas,
-//     o los empareja automáticamente sin código con "buscar partida".
+//     o los empareja automáticamente sin código con "buscar partida" (priorizando rango similar,
+//     y ampliando la tolerancia mientras más tiempo llevan esperando).
 //  2) Un chat global (una sola sala "lobby") para todos los conectados.
 //  3) Solicitudes de amistad entre jugadores conectados en ese momento.
 //  4) Perfil rápido y mensajes directos entre amigos, mientras ambos estén conectados.
@@ -45,7 +46,51 @@ const MAX_HISTORY = 50;
 const onlinePlayers = {};
 
 // ---------- Cola de emparejamiento rápido (PvP sin código) ----------
-let matchmakingQueue = []; // [{ socketId, name }]
+let matchmakingQueue = []; // [{ socketId, name, rank, queuedAt }]
+const RANK_MATCH_WIDEN_MS = 8000; // cada 8s de espera, se tolera 1 rango más de diferencia
+
+function findBestMatch(entry) {
+  let best = null, bestDiff = Infinity;
+  for (const candidate of matchmakingQueue) {
+    if (!io.sockets.sockets.get(candidate.socketId)) continue; // ya no conectado
+    const diff = Math.abs((candidate.rank || 0) - (entry.rank || 0));
+    if (diff < bestDiff) { bestDiff = diff; best = candidate; }
+  }
+  if (!best) return null;
+  const waited = Date.now() - Math.min(entry.queuedAt || Date.now(), best.queuedAt || Date.now());
+  const tolerance = Math.floor(waited / RANK_MATCH_WIDEN_MS); // crece con el tiempo esperado
+  if (bestDiff <= tolerance) return best;
+  return null;
+}
+
+function pairPlayers(a, b) {
+  matchmakingQueue = matchmakingQueue.filter(p => p.socketId !== a.socketId && p.socketId !== b.socketId);
+  const socketA = io.sockets.sockets.get(a.socketId);
+  const socketB = io.sockets.sockets.get(b.socketId);
+  if (!socketA || !socketB) return false;
+  const code = generateCode();
+  rooms[code] = { hostId: a.socketId, hostName: a.name, guestId: b.socketId, guestName: b.name };
+  socketA.join(code); socketA.data.room = code;
+  socketB.join(code); socketB.data.room = code;
+  io.to(a.socketId).emit('match_found', { room: code, isHost: true, opponentName: b.name });
+  io.to(b.socketId).emit('match_found', { room: code, isHost: false, opponentName: a.name });
+  return true;
+}
+
+// Revisa la cola cada pocos segundos por si dos jugadores que ya esperaban
+// ahora caen dentro de la tolerancia de rango (sin que nadie tenga que volver a buscar).
+setInterval(() => {
+  for (let i = 0; i < matchmakingQueue.length; i++) {
+    const entry = matchmakingQueue[i];
+    if (!io.sockets.sockets.get(entry.socketId)) continue;
+    const rest = matchmakingQueue.filter(p => p.socketId !== entry.socketId);
+    const queueBackup = matchmakingQueue;
+    matchmakingQueue = rest;
+    const match = findBestMatch(entry);
+    matchmakingQueue = queueBackup;
+    if (match) { pairPlayers(entry, match); return; }
+  }
+}, 4000);
 
 io.on('connection', (socket) => {
   socket.data.room = null;
@@ -83,31 +128,19 @@ io.on('connection', (socket) => {
     io.to(room.hostId).emit('peer_joined', { name: room.guestName });
   });
 
-  // --- Emparejamiento rápido: "buscar partida" sin código ---
+  // --- Emparejamiento rápido: "buscar partida" sin código, por rango similar ---
   socket.on('find_match', (payload) => {
     // por si ya estaba en cola (doble clic, reconexión, etc.)
     matchmakingQueue = matchmakingQueue.filter(p => p.socketId !== socket.id);
     const name = ((payload && payload.name) || 'Jugador').toString().slice(0, 24);
+    const rank = Number.isFinite(Number(payload && payload.rank)) ? Number(payload.rank) : 0;
+    const entry = { socketId: socket.id, name, rank, queuedAt: Date.now() };
 
-    if (matchmakingQueue.length > 0) {
-      const opponent = matchmakingQueue.shift();
-      const opponentSocket = io.sockets.sockets.get(opponent.socketId);
-      if (!opponentSocket) {
-        // el rival en cola ya no está conectado: esta persona pasa a esperar
-        matchmakingQueue.push({ socketId: socket.id, name });
-        socket.emit('match_searching');
-        return;
-      }
-      const code = generateCode();
-      rooms[code] = { hostId: opponent.socketId, hostName: opponent.name, guestId: socket.id, guestName: name };
-      socket.join(code);
-      socket.data.room = code;
-      opponentSocket.join(code);
-      opponentSocket.data.room = code;
-      io.to(opponent.socketId).emit('match_found', { room: code, isHost: true, opponentName: name });
-      socket.emit('match_found', { room: code, isHost: false, opponentName: opponent.name });
+    const match = findBestMatch(entry);
+    if (match) {
+      pairPlayers(entry, match);
     } else {
-      matchmakingQueue.push({ socketId: socket.id, name });
+      matchmakingQueue.push(entry);
       socket.emit('match_searching');
     }
   });
